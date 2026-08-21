@@ -168,11 +168,22 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
     Search the web for the claim and reconcile the evidence with the
     ML model's prediction to produce one of three final verdicts:
 
-      🟢 VERIFIED REAL  - multiple relevant sources support the claim
-      🔴 LIKELY FAKE    - ML says fake AND no credible supporting evidence found,
-                           OR sources actively contradict the claim
+      🟢 VERIFIED REAL  - relevant sources support the claim
+      🔴 LIKELY FAKE    - no credible supporting evidence found AND the ML
+                           model is confident it's fake
       🟡 UNVERIFIED     - not enough web evidence either way (absence of
                            an article does NOT prove the claim is fake)
+
+    Unlike a pure keyword-match pipeline, the ML prediction is treated as
+    a second, independent signal that's weighed alongside the web
+    evidence at every stage — not just used as a tie-breaker when no
+    evidence is found:
+      - Strong web evidence + ML agrees  -> verdict stated with more confidence.
+      - Strong web evidence + ML disagrees -> web evidence wins (it's the
+        more reliable signal), but the mismatch is called out explicitly,
+        since it's useful to flag that the ML model got this one wrong.
+      - Weak/no web evidence -> the ML prediction becomes the primary
+        signal, with confidence folded into the wording.
 
     ml_label: "REAL" or "FAKE" (the raw ML model prediction)
     ml_confidence: 0-100
@@ -204,6 +215,30 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
 
     matched_sources = sorted(trusted_domains_found or relevant_domains)[:5]
 
+    ml_says_real = ml_label == "REAL"
+    ml_says_fake = ml_label == "FAKE"
+    ml_is_confident = ml_confidence >= 70
+
+    def _ml_agreement_note(evidence_points_real: bool) -> str:
+        """Short clause describing how the ML prediction relates to the
+        web evidence, appended to the main reason string."""
+        if evidence_points_real and ml_says_real:
+            return f" This matches the ML model's own prediction (REAL, {ml_confidence:.1f}% confidence)."
+        if evidence_points_real and ml_says_fake:
+            return (
+                f" Note: the ML model predicted FAKE ({ml_confidence:.1f}% confidence) based on writing "
+                "style alone, but the live web evidence contradicts it — the web evidence is treated "
+                "as more reliable here."
+            )
+        if (not evidence_points_real) and ml_says_fake:
+            return f" This matches the ML model's own prediction (FAKE, {ml_confidence:.1f}% confidence)."
+        if (not evidence_points_real) and ml_says_real:
+            return (
+                f" Note: the ML model predicted REAL ({ml_confidence:.1f}% confidence), but no "
+                "trusted source confirms this claim."
+            )
+        return ""
+
     # --- Decision logic ---
     if len(trusted_domains_found) >= 1 and len(relevant_domains) >= 2:
         # At least 2 distinct outlets covering it, and at least one trusted.
@@ -212,27 +247,50 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
         reason = (
             f"Found {len(relevant_domains)} independent sources "
             f"({', '.join(matched_sources)}) reporting on this claim."
+            + _ml_agreement_note(evidence_points_real=True)
         )
     elif len(relevant_domains) >= 2:
         # Multiple independent outlets, but none trusted — social media
-        # or unknown sites can carry false claims too, so don't confirm.
-        verdict = "UNVERIFIED"
-        verdict_label = "🟡 UNVERIFIED"
-        reason = (
-            f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
-            "but none from a trusted news outlet — not enough to confirm."
-        )
+        # or unknown sites can carry false claims too. Let ML break the
+        # tie: if it's confidently REAL too, lean real (softly); otherwise
+        # stay unverified.
+        if ml_says_real and ml_is_confident:
+            verdict = "VERIFIED_REAL"
+            verdict_label = "🟢 VERIFIED REAL"
+            reason = (
+                f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
+                f"discussing this claim, and the ML model also predicts REAL with "
+                f"{ml_confidence:.1f}% confidence — enough combined signal to confirm, "
+                "though none of the sources are from a major trusted outlet."
+            )
+        else:
+            verdict = "UNVERIFIED"
+            verdict_label = "🟡 UNVERIFIED"
+            reason = (
+                f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
+                "but none from a trusted news outlet — not enough to confirm."
+                + _ml_agreement_note(evidence_points_real=False)
+            )
     elif len(relevant) >= 1:
         # Only one outlet's coverage found (even if it published more than
-        # one article). Usually unverified — UNLESS it's trusted AND has a
-        # strong overlap score, in which case one solid, trusted match is
-        # enough on its own.
+        # one article).
         single = max(relevant, key=lambda e: e.overlap_score)
         if single.is_trusted and single.overlap_score >= STRONG_MATCH_THRESHOLD:
+            # One solid, trusted, highly-relevant match is enough on its own.
             verdict = "VERIFIED_REAL"
             verdict_label = "🟢 VERIFIED REAL"
             reason = (
                 f"Confirmed by one trusted source with a strong match: {single.domain}."
+                + _ml_agreement_note(evidence_points_real=True)
+            )
+        elif single.is_trusted and ml_says_real and ml_is_confident:
+            # Trusted but weaker overlap — ML agreeing tips it over.
+            verdict = "VERIFIED_REAL"
+            verdict_label = "🟢 VERIFIED REAL"
+            reason = (
+                f"One trusted source ({single.domain}) discusses this claim, and the "
+                f"ML model independently predicts REAL with {ml_confidence:.1f}% confidence — "
+                "combined, that's enough to confirm."
             )
         else:
             verdict = "UNVERIFIED"
@@ -240,23 +298,35 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
             reason = (
                 f"Only one outlet's coverage found ({matched_sources[0]}). "
                 "Not enough independent evidence to confirm."
+                + _ml_agreement_note(evidence_points_real=False)
             )
     else:
-        # No relevant coverage found at all.
-        if ml_label == "FAKE" and ml_confidence >= 70:
+        # No relevant coverage found at all — the ML prediction becomes
+        # the primary signal.
+        if ml_says_fake and ml_is_confident:
             verdict = "LIKELY_FAKE"
             verdict_label = "🔴 LIKELY FAKE"
             reason = (
                 "No credible sources report this claim, and the ML model "
                 f"flagged it as fake with {ml_confidence:.1f}% confidence."
             )
+        elif ml_says_real and ml_is_confident:
+            verdict = "UNVERIFIED"
+            verdict_label = "🟡 UNVERIFIED"
+            reason = (
+                "No matching articles found on the web. This does not prove the claim "
+                "is false — it may simply be too recent, too niche, or not yet covered. "
+                f"The ML model leans REAL ({ml_confidence:.1f}% confidence) based on writing "
+                "style, but that alone isn't confirmation."
+            )
         else:
             verdict = "UNVERIFIED"
             verdict_label = "🟡 UNVERIFIED"
             reason = (
-                "No matching articles found on the web. This does not prove "
-                "the claim is false — it may simply be too recent, too niche, "
-                "or not yet covered."
+                "No matching articles found on the web, and the ML model itself isn't "
+                f"confident either way ({ml_label.title()}, {ml_confidence:.1f}% confidence). "
+                "This does not prove the claim is false — it may simply be too recent, "
+                "too niche, or not yet covered."
             )
 
     return VerificationResult(
