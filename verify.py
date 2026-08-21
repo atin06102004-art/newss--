@@ -37,6 +37,10 @@ STOPWORDS = {
 # to the claim. Tune this if you find matches being missed or too loose.
 RELEVANCE_THRESHOLD = 0.35
 
+# Minimum overlap score (0-1) for a SINGLE trusted source, on its own,
+# to be enough to confirm VERIFIED REAL without a second source.
+STRONG_MATCH_THRESHOLD = 0.6
+
 
 @dataclass
 class Evidence:
@@ -200,15 +204,25 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
             "but none from a trusted news outlet — not enough to confirm."
         )
     elif len(relevant) == 1:
-        # Only one matching source — treat as unverified rather than
-        # confirmed, since a single hit could be low quality or unrelated
-        # coverage of the same keywords.
-        verdict = "UNVERIFIED"
-        verdict_label = "🟡 UNVERIFIED"
-        reason = (
-            f"Only one loosely related source found ({matched_sources[0]}). "
-            "Not enough independent evidence to confirm."
-        )
+        # Only one matching source. Usually treated as unverified, since a
+        # single hit could be low quality or loosely-related coverage of
+        # the same keywords — UNLESS it's from a trusted outlet AND has a
+        # strong overlap score, in which case one solid match is enough.
+        single = relevant[0]
+        single_overlap = _keyword_overlap(claim, single.title + " " + single.snippet)
+        if single.is_trusted and single_overlap >= STRONG_MATCH_THRESHOLD:
+            verdict = "VERIFIED_REAL"
+            verdict_label = "🟢 VERIFIED REAL"
+            reason = (
+                f"Confirmed by one trusted source with a strong match: {single.domain}."
+            )
+        else:
+            verdict = "UNVERIFIED"
+            verdict_label = "🟡 UNVERIFIED"
+            reason = (
+                f"Only one loosely related source found ({matched_sources[0]}). "
+                "Not enough independent evidence to confirm."
+            )
     else:
         # No relevant coverage found at all.
         if ml_label == "FAKE" and ml_confidence >= 70:
