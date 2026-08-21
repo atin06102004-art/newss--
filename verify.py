@@ -20,10 +20,24 @@ from tavily import TavilyClient
 # in results. This is just used to order/label sources — Tavily itself
 # already ranks by relevance.
 TRUSTED_DOMAINS = [
+    # Global wire services & major international outlets
     "reuters.com", "apnews.com", "bbc.com", "bbc.co.uk", "npr.org",
-    "theguardian.com", "aljazeera.com", "thehindu.com", "ndtv.com",
-    "indianexpress.com", "hindustantimes.com", "timesofindia.indiatimes.com",
+    "theguardian.com", "aljazeera.com", "cnn.com", "cbsnews.com",
+    "nbcnews.com", "abcnews.com", "washingtonpost.com", "nytimes.com",
+    "foxnews.com", "wsj.com", "bloomberg.com", "cnbc.com", "usatoday.com",
+    "time.com", "newsweek.com", "economist.com", "afp.com",
+    # Canada
+    "cbc.ca", "ctvnews.ca", "globalnews.ca",
+    # Middle East / Israel
+    "jpost.com", "timesofisrael.com", "haaretz.com", "arabnews.com",
+    # India
+    "thehindu.com", "ndtv.com", "indianexpress.com", "hindustantimes.com",
+    "timesofindia.indiatimes.com", "livemint.com",
+    # Local / regional US news networks
+    "spectrumlocalnews.com", "wng.org",
+    # Government / institutional / specialist
     "gov.in", "who.int", "un.org", "espncricinfo.com", "icc-cricket.com",
+    "whitehouse.gov",
 ]
 
 # Words that don't help decide topical relevance — stripped before comparing.
