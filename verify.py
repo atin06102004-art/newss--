@@ -197,34 +197,37 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
     relevant = [e for e in evidence if e.overlap_score >= RELEVANCE_THRESHOLD]
     trusted_relevant = [e for e in relevant if e.is_trusted]
 
-    matched_sources = [e.domain for e in (trusted_relevant or relevant)][:5]
+    # Independent confirmation requires distinct domains — two articles
+    # from the same outlet aren't two separate confirmations.
+    relevant_domains = {e.domain for e in relevant}
+    trusted_domains_found = {e.domain for e in trusted_relevant}
+
+    matched_sources = sorted(trusted_domains_found or relevant_domains)[:5]
 
     # --- Decision logic ---
-    if len(trusted_relevant) >= 1 and len(relevant) >= 2:
-        # Enough independent, on-topic coverage AND at least one trusted
-        # outlet -> treat as confirmed.
+    if len(trusted_domains_found) >= 1 and len(relevant_domains) >= 2:
+        # At least 2 distinct outlets covering it, and at least one trusted.
         verdict = "VERIFIED_REAL"
         verdict_label = "🟢 VERIFIED REAL"
         reason = (
-            f"Found {len(relevant)} relevant sources "
+            f"Found {len(relevant_domains)} independent sources "
             f"({', '.join(matched_sources)}) reporting on this claim."
         )
-    elif len(relevant) >= 2:
-        # Multiple sources found, but none from a trusted outlet —
-        # social media or unknown sites can carry false claims too,
-        # so don't confirm as REAL on this alone.
+    elif len(relevant_domains) >= 2:
+        # Multiple independent outlets, but none trusted — social media
+        # or unknown sites can carry false claims too, so don't confirm.
         verdict = "UNVERIFIED"
         verdict_label = "🟡 UNVERIFIED"
         reason = (
-            f"Found {len(relevant)} sources ({', '.join(matched_sources)}) "
+            f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
             "but none from a trusted news outlet — not enough to confirm."
         )
-    elif len(relevant) == 1:
-        # Only one matching source. Usually treated as unverified, since a
-        # single hit could be low quality or loosely-related coverage of
-        # the same keywords — UNLESS it's from a trusted outlet AND has a
-        # strong overlap score, in which case one solid match is enough.
-        single = relevant[0]
+    elif len(relevant) >= 1:
+        # Only one outlet's coverage found (even if it published more than
+        # one article). Usually unverified — UNLESS it's trusted AND has a
+        # strong overlap score, in which case one solid, trusted match is
+        # enough on its own.
+        single = max(relevant, key=lambda e: e.overlap_score)
         if single.is_trusted and single.overlap_score >= STRONG_MATCH_THRESHOLD:
             verdict = "VERIFIED_REAL"
             verdict_label = "🟢 VERIFIED REAL"
@@ -235,7 +238,7 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
             verdict = "UNVERIFIED"
             verdict_label = "🟡 UNVERIFIED"
             reason = (
-                f"Only one loosely related source found ({matched_sources[0]}). "
+                f"Only one outlet's coverage found ({matched_sources[0]}). "
                 "Not enough independent evidence to confirm."
             )
     else:
