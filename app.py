@@ -226,6 +226,47 @@ def render_verdict_badge(verdict_label, reason=None):
     )
 
 
+def render_web_card(result):
+    """A simple, ML-card-style summary of what the web search itself found,
+    separate from the combined final verdict."""
+    relevant_count = len(result.matched_sources)
+    total_count = len(result.evidence)
+
+    if relevant_count >= 2:
+        color, label = "#3fb950", "SUPPORTS"
+    elif relevant_count == 1:
+        color, label = "#b8860b", "PARTIAL"
+    else:
+        color, label = "#f85149", "NO SUPPORT"
+
+    st.markdown(
+        f"""
+        <div class="gt-card">
+            <div class="gt-label-row">
+                <span class="gt-dot" style="background-color:{color};"></span>
+                <span class="gt-label-text" style="color:{color};">{label}</span>
+            </div>
+            <div class="gt-conf-caption" style="margin-top:6px;">
+                {total_count} web result(s) found · {relevant_count} relevant source(s)
+                {"· " + ", ".join(result.matched_sources) if result.matched_sources else ""}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_web_reason(result):
+    st.markdown(
+        f"""
+        <div class="gt-explain-block">
+            <p style="color:#c9d1d9;">{result.reason}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_source_cards(evidence):
     if not evidence:
         st.caption("No web results were returned for this claim.")
@@ -334,41 +375,39 @@ def main():
         ml = run_ml_prediction(text_input, model, vectorizer)
 
         # ---------------- Action 1: Check News ----------------
-        # Simple ML result, then the final combined verdict. No raw source
-        # list here — that's what "Verify with Web" is for.
+        # Final verdict first, then the two signals that produced it:
+        # ML prediction, then Tavily/web prediction.
         if check_clicked:
-            st.subheader("Step 1 · ML Prediction")
+            result = get_verification(text_input, ml["label"], ml["confidence"])
+
+            if result:
+                st.subheader("Final Verdict")
+                render_verdict_badge(result.verdict_label, result.reason)
+
+            st.subheader("ML Prediction")
             render_ml_card(ml)
 
-            result = get_verification(text_input, ml["label"], ml["confidence"])
             if result:
-                st.subheader("Step 2 · Final Verdict")
-                render_verdict_badge(result.verdict_label, result.reason)
-                st.caption("Tap **Verify with Web** to see the sources behind this verdict.")
+                st.subheader("Tavily Prediction")
+                render_web_card(result)
+                st.caption("Tap **Verify with Web** to see the actual sources.")
 
         # ---------------- Action 2: Verify with Web ----------------
-        # The actual references: real links, titles, and snippets.
+        # Just why Tavily reached its conclusion, and the real sources.
         elif verify_clicked:
-            st.subheader("Step 1 · ML Prediction")
-            render_ml_card(ml)
-
             result = get_verification(text_input, ml["label"], ml["confidence"])
             if result:
-                st.subheader("Step 2 · Web Sources")
-                render_source_cards(result.evidence)
+                st.subheader("Why Tavily Says This")
+                render_web_reason(result)
 
-                st.subheader("Step 3 · Final Verdict")
-                render_verdict_badge(result.verdict_label, result.reason)
+                st.subheader("Sources")
+                render_source_cards(result.evidence)
 
         # ---------------- Action 3: Explain ----------------
         # One combined explanation: ML reasoning + web-evidence reasoning.
         elif explain_clicked:
-            st.subheader("Step 1 · ML Prediction")
-            render_ml_card(ml)
-
             result = get_verification(text_input, ml["label"], ml["confidence"])
 
-            st.subheader("Explanation")
             render_ml_explanation(text_input, model, vectorizer)
             st.divider()
             if result:
