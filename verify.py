@@ -26,6 +26,17 @@ TRUSTED_DOMAINS = [
     "gov.in", "who.int", "un.org", "espncricinfo.com", "icc-cricket.com",
 ]
 
+# Words that don't help decide topical relevance — stripped before comparing.
+STOPWORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "in", "on", "of",
+    "to", "for", "and", "or", "that", "this", "with", "at", "by",
+    "has", "have", "had", "will", "be", "as", "it", "its", "new",
+}
+
+# Minimum overlap score (0-1) for a search result to count as "relevant"
+# to the claim. Tune this if you find matches being missed or too loose.
+RELEVANCE_THRESHOLD = 0.35
+
 
 @dataclass
 class Evidence:
@@ -95,22 +106,42 @@ def search_web(claim: str, max_results: int = 6) -> list:
     return results
 
 
+def _normalize_words(words):
+    """
+    Strip stopwords and apply light suffix-stemming so word-form
+    differences (arrives/arrived, sanctions/sanctioned) still match.
+    """
+    out = set()
+    for w in words:
+        if w in STOPWORDS:
+            continue
+        stemmed = w
+        for suf in ("ing", "ed", "es", "s"):
+            if stemmed.endswith(suf) and len(stemmed) - len(suf) >= 3:
+                stemmed = stemmed[: -len(suf)]
+                break
+        out.add(stemmed)
+    return out
+
+
 def _keyword_overlap(claim: str, text: str) -> float:
     """
-    Rough lexical-overlap score between the claim and a piece of evidence
-    text. This is a cheap heuristic, not semantic matching — good enough
-    to flag whether a result is actually about the claim.
+    Lexical-overlap score between the claim and a piece of evidence text.
+    Scored against the SMALLER of the two word sets (not just the claim),
+    so long/multi-part claims aren't unfairly penalized when an article
+    only echoes part of them. Light stemming handles simple word-form
+    differences. This is a cheap heuristic, not semantic matching — good
+    enough to flag whether a result is actually about the claim.
     """
-    stop = {
-        "the", "a", "an", "is", "are", "was", "were", "in", "on", "of",
-        "to", "for", "and", "or", "that", "this", "with", "at", "by",
-        "has", "have", "had", "will", "be", "as", "it", "its",
-    }
-    claim_words = {w for w in re.findall(r"[a-z0-9]+", claim.lower()) if w not in stop}
-    text_words = {w for w in re.findall(r"[a-z0-9]+", text.lower()) if w not in stop}
-    if not claim_words:
+    claim_words = _normalize_words(re.findall(r"[a-z0-9]+", claim.lower()))
+    text_words = _normalize_words(re.findall(r"[a-z0-9]+", text.lower()))
+
+    if not claim_words or not text_words:
         return 0.0
-    return len(claim_words & text_words) / len(claim_words)
+
+    overlap = len(claim_words & text_words)
+    denom = min(len(claim_words), len(text_words))
+    return overlap / denom
 
 
 def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: int = 6) -> VerificationResult:
@@ -140,7 +171,10 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
 
     # Score how relevant each result actually is to the claim text,
     # not just whatever Tavily returned.
-    relevant = [e for e in evidence if _keyword_overlap(claim, e.title + " " + e.snippet) >= 0.3]
+    relevant = [
+        e for e in evidence
+        if _keyword_overlap(claim, e.title + " " + e.snippet) >= RELEVANCE_THRESHOLD
+    ]
     trusted_relevant = [e for e in relevant if e.is_trusted]
 
     matched_sources = [e.domain for e in (trusted_relevant or relevant)][:5]
