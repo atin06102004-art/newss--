@@ -136,8 +136,12 @@ def main():
                     st.markdown("**Sources found:**")
                     for e in result.evidence[:5]:
                         trust_tag = "✅ trusted" if e.is_trusted else ""
+                        # DEBUG: shows the raw overlap score used for the
+                        # relevance decision, so thresholds can be tuned
+                        # against real numbers. Remove this line once done.
+                        debug_tag = f"[overlap: {e.overlap_score:.2f}]"
                         st.markdown(
-                            f"- [{e.title}]({e.url}) — `{e.domain}` {trust_tag}\n"
+                            f"- [{e.title}]({e.url}) — `{e.domain}` {trust_tag} `{debug_tag}`\n"
                             f"  \n  <span style='color:gray;font-size:13px;'>{e.snippet}</span>",
                             unsafe_allow_html=True,
                         )
