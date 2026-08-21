@@ -55,6 +55,15 @@ RELEVANCE_THRESHOLD = 0.35
 # to be enough to confirm VERIFIED REAL without a second source.
 STRONG_MATCH_THRESHOLD = 0.6
 
+# --- Source-count verification rule -----------------------------------
+# A claim is only marked VERIFIED REAL when at least this many
+# *independent* (distinct-domain) sources report on it. Fewer than this
+# is marked UNVERIFIED, not FAKE — absence of enough coverage doesn't
+# mean the claim is false, just that it isn't confirmed yet.
+# Set to 3 by default (i.e. "3-4 sources"); bump to 4 if you want a
+# stricter bar.
+MIN_SOURCES_FOR_VERIFIED = 3
+
 
 @dataclass
 class Evidence:
@@ -168,22 +177,19 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
     Search the web for the claim and reconcile the evidence with the
     ML model's prediction to produce one of three final verdicts:
 
-      🟢 VERIFIED REAL  - relevant sources support the claim
+      🟢 VERIFIED REAL  - at least MIN_SOURCES_FOR_VERIFIED independent
+                           sources report on the claim
       🔴 LIKELY FAKE    - no credible supporting evidence found AND the ML
                            model is confident it's fake
-      🟡 UNVERIFIED     - not enough web evidence either way (absence of
-                           an article does NOT prove the claim is fake)
+      🟡 UNVERIFIED     - fewer than MIN_SOURCES_FOR_VERIFIED sources found
+                           (absence of enough coverage does NOT prove the
+                           claim is false)
 
-    Unlike a pure keyword-match pipeline, the ML prediction is treated as
-    a second, independent signal that's weighed alongside the web
-    evidence at every stage — not just used as a tie-breaker when no
-    evidence is found:
-      - Strong web evidence + ML agrees  -> verdict stated with more confidence.
-      - Strong web evidence + ML disagrees -> web evidence wins (it's the
-        more reliable signal), but the mismatch is called out explicitly,
-        since it's useful to flag that the ML model got this one wrong.
-      - Weak/no web evidence -> the ML prediction becomes the primary
-        signal, with confidence folded into the wording.
+    The verdict is now driven primarily by *source count*: a claim needs
+    corroboration from several independent outlets (distinct domains) to
+    be called verified. Anything below that bar is UNVERIFIED, not FAKE —
+    only a total absence of coverage combined with a confident ML "FAKE"
+    prediction pushes the verdict to LIKELY FAKE.
 
     ml_label: "REAL" or "FAKE" (the raw ML model prediction)
     ml_confidence: 0-100
@@ -206,17 +212,18 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
         e.overlap_score = _keyword_overlap(claim, e.title + " " + e.snippet)
 
     relevant = [e for e in evidence if e.overlap_score >= RELEVANCE_THRESHOLD]
-    trusted_relevant = [e for e in relevant if e.is_trusted]
 
     # Independent confirmation requires distinct domains — two articles
     # from the same outlet aren't two separate confirmations.
     relevant_domains = {e.domain for e in relevant}
+    trusted_relevant = [e for e in relevant if e.is_trusted]
     trusted_domains_found = {e.domain for e in trusted_relevant}
 
     matched_sources = sorted(trusted_domains_found or relevant_domains)[:5]
+    source_count = len(relevant_domains)
 
-    ml_says_real = ml_label == "REAL"
     ml_says_fake = ml_label == "FAKE"
+    ml_says_real = ml_label == "REAL"
     ml_is_confident = ml_confidence >= 70
 
     def _ml_agreement_note(evidence_points_real: bool) -> str:
@@ -234,72 +241,49 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
             return f" This matches the ML model's own prediction (FAKE, {ml_confidence:.1f}% confidence)."
         if (not evidence_points_real) and ml_says_real:
             return (
-                f" Note: the ML model predicted REAL ({ml_confidence:.1f}% confidence), but no "
-                "trusted source confirms this claim."
+                f" Note: the ML model predicted REAL ({ml_confidence:.1f}% confidence), but not enough "
+                "independent sources confirm this claim yet."
             )
         return ""
 
-    # --- Decision logic ---
-    if len(trusted_domains_found) >= 1 and len(relevant_domains) >= 2:
-        # At least 2 distinct outlets covering it, and at least one trusted.
+    # --- Decision logic: driven primarily by independent source count ---
+    if source_count >= MIN_SOURCES_FOR_VERIFIED:
+        # Enough independent outlets are reporting on this — call it verified.
         verdict = "VERIFIED_REAL"
         verdict_label = "🟢 VERIFIED REAL"
         reason = (
-            f"Found {len(relevant_domains)} independent sources "
-            f"({', '.join(matched_sources)}) reporting on this claim."
+            f"Found {source_count} independent sources "
+            f"({', '.join(matched_sources)}) reporting on this claim — meets the "
+            f"{MIN_SOURCES_FOR_VERIFIED}+ independent-source threshold for verification."
             + _ml_agreement_note(evidence_points_real=True)
         )
-    elif len(relevant_domains) >= 2:
-        # Multiple independent outlets, but none trusted — social media
-        # or unknown sites can carry false claims too. Let ML break the
-        # tie: if it's confidently REAL too, lean real (softly); otherwise
-        # stay unverified.
-        if ml_says_real and ml_is_confident:
-            verdict = "VERIFIED_REAL"
-            verdict_label = "🟢 VERIFIED REAL"
-            reason = (
-                f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
-                f"discussing this claim, and the ML model also predicts REAL with "
-                f"{ml_confidence:.1f}% confidence — enough combined signal to confirm, "
-                "though none of the sources are from a major trusted outlet."
-            )
-        else:
-            verdict = "UNVERIFIED"
-            verdict_label = "🟡 UNVERIFIED"
-            reason = (
-                f"Found {len(relevant_domains)} sources ({', '.join(matched_sources)}) "
-                "but none from a trusted news outlet — not enough to confirm."
-                + _ml_agreement_note(evidence_points_real=False)
-            )
-    elif len(relevant) >= 1:
-        # Only one outlet's coverage found (even if it published more than
-        # one article).
+
+    elif source_count >= 1:
+        # Some coverage exists, but not enough distinct outlets yet to
+        # clear the verification bar. One special case: a single very
+        # strong, highly-relevant match from a major trusted wire service
+        # (e.g. Reuters/AP breaking a story before anyone else has) can
+        # still be called verified on its own.
         single = max(relevant, key=lambda e: e.overlap_score)
         if single.is_trusted and single.overlap_score >= STRONG_MATCH_THRESHOLD:
-            # One solid, trusted, highly-relevant match is enough on its own.
             verdict = "VERIFIED_REAL"
             verdict_label = "🟢 VERIFIED REAL"
             reason = (
-                f"Confirmed by one trusted source with a strong match: {single.domain}."
+                f"Confirmed by one major trusted source with a strong match: {single.domain}. "
+                "(Below the usual multi-source threshold, but the match quality and source "
+                "reliability are high enough on their own.)"
                 + _ml_agreement_note(evidence_points_real=True)
-            )
-        elif single.is_trusted and ml_says_real and ml_is_confident:
-            # Trusted but weaker overlap — ML agreeing tips it over.
-            verdict = "VERIFIED_REAL"
-            verdict_label = "🟢 VERIFIED REAL"
-            reason = (
-                f"One trusted source ({single.domain}) discusses this claim, and the "
-                f"ML model independently predicts REAL with {ml_confidence:.1f}% confidence — "
-                "combined, that's enough to confirm."
             )
         else:
             verdict = "UNVERIFIED"
             verdict_label = "🟡 UNVERIFIED"
             reason = (
-                f"Only one outlet's coverage found ({matched_sources[0]}). "
-                "Not enough independent evidence to confirm."
+                f"Only {source_count} independent source(s) found "
+                f"({', '.join(matched_sources)}) — below the "
+                f"{MIN_SOURCES_FOR_VERIFIED}+ needed to confirm. Not enough corroboration yet."
                 + _ml_agreement_note(evidence_points_real=False)
             )
+
     else:
         # No relevant coverage found at all — the ML prediction becomes
         # the primary signal.
