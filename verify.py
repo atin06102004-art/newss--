@@ -180,13 +180,24 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
     matched_sources = [e.domain for e in (trusted_relevant or relevant)][:5]
 
     # --- Decision logic ---
-    if len(relevant) >= 2:
-        # Enough independent, on-topic coverage found -> treat as confirmed.
+    if len(trusted_relevant) >= 1 and len(relevant) >= 2:
+        # Enough independent, on-topic coverage AND at least one trusted
+        # outlet -> treat as confirmed.
         verdict = "VERIFIED_REAL"
         verdict_label = "🟢 VERIFIED REAL"
         reason = (
             f"Found {len(relevant)} relevant sources "
             f"({', '.join(matched_sources)}) reporting on this claim."
+        )
+    elif len(relevant) >= 2:
+        # Multiple sources found, but none from a trusted outlet —
+        # social media or unknown sites can carry false claims too,
+        # so don't confirm as REAL on this alone.
+        verdict = "UNVERIFIED"
+        verdict_label = "🟡 UNVERIFIED"
+        reason = (
+            f"Found {len(relevant)} sources ({', '.join(matched_sources)}) "
+            "but none from a trusted news outlet — not enough to confirm."
         )
     elif len(relevant) == 1:
         # Only one matching source — treat as unverified rather than
