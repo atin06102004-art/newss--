@@ -50,6 +50,7 @@ class Evidence:
     snippet: str
     score: float
     is_trusted: bool = False
+    overlap_score: float = 0.0  # debug: how well this result matches the claim (0-1)
 
 
 @dataclass
@@ -174,11 +175,12 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
         )
 
     # Score how relevant each result actually is to the claim text,
-    # not just whatever Tavily returned.
-    relevant = [
-        e for e in evidence
-        if _keyword_overlap(claim, e.title + " " + e.snippet) >= RELEVANCE_THRESHOLD
-    ]
+    # not just whatever Tavily returned. Store the score on each item too
+    # (debug: visible in the UI) so thresholds can be tuned from real data.
+    for e in evidence:
+        e.overlap_score = _keyword_overlap(claim, e.title + " " + e.snippet)
+
+    relevant = [e for e in evidence if e.overlap_score >= RELEVANCE_THRESHOLD]
     trusted_relevant = [e for e in relevant if e.is_trusted]
 
     matched_sources = [e.domain for e in (trusted_relevant or relevant)][:5]
@@ -209,8 +211,7 @@ def verify_claim(claim: str, ml_label: str, ml_confidence: float, max_results: i
         # the same keywords — UNLESS it's from a trusted outlet AND has a
         # strong overlap score, in which case one solid match is enough.
         single = relevant[0]
-        single_overlap = _keyword_overlap(claim, single.title + " " + single.snippet)
-        if single.is_trusted and single_overlap >= STRONG_MATCH_THRESHOLD:
+        if single.is_trusted and single.overlap_score >= STRONG_MATCH_THRESHOLD:
             verdict = "VERIFIED_REAL"
             verdict_label = "🟢 VERIFIED REAL"
             reason = (
