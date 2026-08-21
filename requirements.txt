@@ -1,0 +1,9 @@
+streamlit
+scikit-learn
+pandas
+numpy
+nltk
+lime
+joblib
+tavily-python
+python-dotenv
